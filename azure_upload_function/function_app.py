@@ -432,41 +432,39 @@ def upload(req: func.HttpRequest) -> func.HttpResponse:
                     json.dumps({"error": f"Extraction returned too little text from '{filename}'."}),
                     status_code=422, mimetype="application/json")
 
-        # ── 4. OpenAI: summary + tags + embedding ─────────────────────────
+        # ── 4. OpenAI: summary + tags + embedding (parallel) ──────────────
         t1 = time.time()
+        from concurrent.futures import ThreadPoolExecutor
 
-        # generate_summary with error handling (Task 9.3)
-        try:
-            summary = generate_summary(text)
-            if not summary:
-                logging.warning("generate_summary returned empty for '%s'", filename)
-                summary = ""
-        except Exception as sum_exc:
-            logging.warning("generate_summary failed for '%s': %s — storing empty summary", filename, sum_exc)
-            summary = ""
+        def _safe_summary():
+            try: return generate_summary(text) or ""
+            except Exception as e: logging.warning("generate_summary failed: %s", e); return ""
 
-        # generate_tags with error handling (Task 9.3)
-        # Always generate AI tags; merge with any user-provided tags
-        try:
-            ai_tags_str = generate_tags(text)
-            if not ai_tags_str:
-                logging.warning("generate_tags returned empty for '%s'", filename)
-                ai_tags_str = ""
-        except Exception as tag_exc:
-            logging.warning("generate_tags failed for '%s': %s — storing empty tags", filename, tag_exc)
-            ai_tags_str = ""
+        def _safe_tags():
+            try: return generate_tags(text) or ""
+            except Exception as e: logging.warning("generate_tags failed: %s", e); return ""
+
+        def _safe_embedding():
+            try: return generate_embedding(text) or []
+            except Exception as e: logging.warning("generate_embedding failed: %s", e); return []
+
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            f_summary   = ex.submit(_safe_summary)
+            f_tags      = ex.submit(_safe_tags)
+            f_embedding = ex.submit(_safe_embedding)
+            summary     = f_summary.result()
+            ai_tags_str = f_tags.result()
+            embedding   = f_embedding.result()
+
+        logging.info("Summary+tags+embedding in %.2fs | Embedding size: %d",
+                     time.time() - t1, len(embedding) if embedding else 0)
 
         # Merge user-provided tags with AI-generated tags (deduplicated)
         user_tags = [t.strip() for t in tags_input.split(",") if t.strip()]
         ai_tags   = [t.strip() for t in ai_tags_str.split(",") if t.strip()]
-        merged    = list(dict.fromkeys(user_tags + ai_tags))  # preserve order, deduplicate
+        merged    = list(dict.fromkeys(user_tags + ai_tags))
         tags_str  = ", ".join(merged)
-
         tags_list = [t.strip() for t in tags_str.split(",") if t.strip()]
-
-        embedding = generate_embedding(text)
-        logging.info("Summary+tags+embedding in %.2fs | Embedding size: %d",
-                     time.time() - t1, len(embedding) if embedding else 0)
 
         if not embedding:
             return func.HttpResponse(
