@@ -239,9 +239,10 @@ def _cosine_rerank(
         from services.table_service import TableService
         table_svc = TableService()
 
-        # Fetch embeddings for all candidates in one pass
+        # Fetch embeddings for all candidates in one pass (fast point lookups)
         chunk_ids = [c["id"] for c in candidates]
-        embeddings_map = table_svc.get_chunk_embeddings(chunk_ids)
+        doc_ids   = {c["id"]: c.get("doc_id", "") for c in candidates}
+        embeddings_map = table_svc.get_chunk_embeddings(chunk_ids, doc_ids)
 
         scored = []
         bm25_scores = [c["bm25_score"] for c in candidates]

@@ -502,9 +502,10 @@ def store_chunk_embedding(chunk_id: str, doc_id: str, embedding: list[float]) ->
         logging.exception("store_chunk_embedding failed for chunk_id=%s", chunk_id)
 
 
-def get_chunk_embeddings(chunk_ids: list[str]) -> dict[str, list[float]]:
+def get_chunk_embeddings(chunk_ids: list[str], doc_ids: dict[str, str] = None) -> dict[str, list[float]]:
     """
     Batch-fetch embeddings for a list of chunk_ids.
+    doc_ids: optional { chunk_id: doc_id } map for fast point lookups.
     Returns { chunk_id: embedding_vector }.
     """
     result: dict[str, list[float]] = {}
@@ -514,16 +515,20 @@ def get_chunk_embeddings(chunk_ids: list[str]) -> dict[str, list[float]]:
         client = _get_chunk_client()
         for chunk_id in chunk_ids:
             try:
-                # RowKey = chunk_id; PartitionKey = doc_id (encoded in chunk_id as prefix)
-                # Try a filter query since we don't know PartitionKey
-                entities = list(client.query_entities(
-                    query_filter=f"RowKey eq '{chunk_id}'",
-                    select=["RowKey", "embedding"],
-                ))
-                if entities:
-                    raw = entities[0].get("embedding", "")
-                    if raw:
-                        result[chunk_id] = json.loads(raw)
+                doc_id = (doc_ids or {}).get(chunk_id)
+                if doc_id:
+                    # Fast point lookup using PartitionKey + RowKey
+                    entity = client.get_entity(partition_key=doc_id, row_key=chunk_id)
+                    raw = entity.get("embedding", "")
+                else:
+                    # Fallback: filter query (slow)
+                    entities = list(client.query_entities(
+                        query_filter=f"RowKey eq '{chunk_id}'",
+                        select=["RowKey", "embedding"],
+                    ))
+                    raw = entities[0].get("embedding", "") if entities else ""
+                if raw:
+                    result[chunk_id] = json.loads(raw)
             except Exception as exc:
                 logging.warning("get_chunk_embeddings: failed for %s: %s", chunk_id, exc)
     except Exception:
